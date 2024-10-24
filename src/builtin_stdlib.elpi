@@ -34,7 +34,7 @@ ignore-failure! _.
 pred once i:prop.
 once P :- P, !.
 
-% [assert! C M] takes the first success of C or fails with message M
+% [assert! C M] takes the first success of C or fails with message M 
 pred assert! i:prop, i:string.
 assert! Cond Msg :- (Cond ; fatal-error-w-data Msg Cond), !.
 
@@ -143,6 +143,7 @@ map-filter [] _ [].
 map-filter [X|XS] F [Y|YS] :- F X Y, !, map-filter XS F YS.
 map-filter [_|XS] F YS :- map-filter XS F YS.
 
+:index(1 1)
 pred map2 i:list A, i:list B, i:(A -> B -> C -> prop), o:list C.
 map2 [] [_|_] _ _ :- fatal-error "map2 on lists of different length".
 map2 [_|_] [] _ _ :- fatal-error "map2 on lists of different length".
@@ -185,12 +186,12 @@ pred lookup! i:list (pair A B), i:A, o:B.
 lookup! [pr X Y|_] X Y :- !.
 lookup! [_|LS]       X Y :- lookup! LS X Y.
 
-% [mem! L X] succeeds once if X occurs inside L
+% [mem! L X] succeeds once if X occurs inside L 
 pred mem! i:list A, o:A.
 mem! [X|_] X :- !.
 mem! [_|L] X :- mem! L X.
 
-% [mem L X] succeeds every time if X occurs inside L
+% [mem L X] succeeds every time if X occurs inside L 
 pred mem i:list A, o:A.
 mem [X|_] X.
 mem [_|L] X :- mem L X.
