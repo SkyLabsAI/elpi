@@ -2335,6 +2335,39 @@ let output arguments assignments state =
 
 module Indexing = struct (* {{{ *)
 
+(* These are sorted wrt lex_insertion
+ -2
+ -1
+  0
+  1.-1
+  1.-2
+  1
+  1.+2
+  1.+1
+  2
+
+  The idea being that clause "a" to be inserted w.r.t. "b" takes
+  as timestamp the one of "b" followerd by the timestamp. If "a"
+  has to be before, the timestamp is made negative.
+*)
+let lex_insertion l1 l2 =
+  let rec lex_insertion fst l1 l2 =
+  match l1, l2 with
+  | [], [] -> 0
+  | x :: l1, y :: l2  when not fst ->
+      let r =
+        if x < 0 && y < 0 || x > 0 && y > 0
+          then y - x else x - y in
+      if r = 0 then lex_insertion false l1 l2
+      else r
+  | x1 :: l1, x2 :: l2 ->
+      let x = x1 - x2 in
+      if x = 0 then lex_insertion false l1 l2
+      else x
+  | [], ys -> lex_insertion false [0] ys
+  | xs, [] -> lex_insertion false xs [0]
+  in
+  lex_insertion true l1 l2
 let mustbevariablec = min_int (* uvar or uvar t or uvar l t *)
 
 let ppclause f ~hd { depth; args = args; hyps = hyps } =
@@ -2347,9 +2380,8 @@ let tail_opt = function
   | [] -> []
   | _ :: xs -> xs
 
-(** [hd_opt L] returns false if L = [[]] otherwise L.(0)  *)
 let hd_opt = function
-  | b :: _ -> b
+  | x :: _ -> get_arg_mode x
   | _ -> Output
 
 type clause_arg_classification =
@@ -2475,8 +2507,32 @@ let hash_arg_list is_goal hd ~depth args mode spec =
 let hash_clause_arg_list = hash_arg_list false
 let hash_goal_arg_list = hash_arg_list true
 
+(*  returns the maximal length of any sub_list
+    this operation is done at compile time per each clause being index
+    for example the term (app['a','b',app['c','d','e'], 'f', app['a','b','c','d','e','f']])
+    has three lists L1 = ['a','b',app['c','d','e'], 'f', app['a','b','c','d','e','f']
+                    L2 = ['c','d','e']
+                    L3 = app['a','b','c','d','e','f']
+    and the longest one has length 6
+*)
+let rec max_list_length acc = function
+  | Nil -> acc
+  | Cons (a, (UVar (_, _, _) | AppUVar (_, _, _) | Arg (_, _) | AppArg (_, _) | Discard)) -> 
+      let alen = max_list_length 0 a in
+      max (acc+2) alen
+  | Cons (a, b)-> 
+      let alen = max_list_length 0 a in
+      let blen = max_list_length (acc+1) b in 
+      max blen alen
+  | App (_,x,xs) -> List.fold_left (fun acc x -> max acc (max_list_length 0 x)) acc (x::xs)
+  | Builtin (_, xs) -> List.fold_left (fun acc x -> max acc (max_list_length 0 x)) acc xs
+  | Lam t -> max_list_length acc t
+  | Discard | Const _ |CData _ | UVar (_, _, _) | AppUVar (_, _, _) | Arg (_, _) | AppArg (_, _) -> acc
+
+let max_lists_length = List.fold_left (fun acc e -> max (max_list_length 0 e) acc) 0
+
 (** 
-  [arg_to_trie_path ~safe ~depth ~is_goal args arg_depths arg_modes]
+  [arg_to_trie_path ~safe ~depth ~is_goal args arg_depths arg_modes mp max_list_length]
   returns the path represetation of a term to be used in indexing with trie.
   args, args_depths and arg_modes are the lists of respectively the arguments, the 
   depths and the modes of the current term to be indexed.
@@ -2485,10 +2541,14 @@ let hash_goal_arg_list = hash_arg_list true
   In the former case, each argument we add a special mkInputMode/mkOutputMode 
   node before each argument to be indexed. This special node is used during 
   instance retrival to know the mode of the current argument
+  - mp is the max_path size of any path in the index used to truncate the goal
+  - max_list_length is the length of the longest sublist in each term of args 
 *)
-let arg_to_trie_path ~safe ~depth ~is_goal args arg_depths args_depths_ar arg_modes mp : Discrimination_tree.Path.t =
+let arg_to_trie_path ~safe ~depth ~is_goal args arg_depths args_depths_ar mode mp (max_list_length':int) : Discrimination_tree.Path.t =
   let open Discrimination_tree in
-  let path = Path.make (max mp 8) mkPathEnd in
+
+  let path_length = mp + Array.length args_depths_ar + 1 in
+  let path = Path.make path_length mkPathEnd in
   
   let current_ar_pos = ref 0 in
   let current_user_depth = ref 0 in
@@ -2505,7 +2565,7 @@ let arg_to_trie_path ~safe ~depth ~is_goal args arg_depths args_depths_ar arg_mo
     end
   in
 
-  let rec list_to_trie_path ~safe ~depth ?(h=0) path_depth (len: int) (t: term) : unit =
+  let rec list_to_trie_path ~safe ~depth ~h path_depth (len: int) (t: term) : unit =
     match deref_head ~depth t with
     | Nil -> Path.emit path mkListEnd; update_current_min_depth path_depth
     | Cons (a, b) ->
@@ -2517,10 +2577,10 @@ let arg_to_trie_path ~safe ~depth ~is_goal args arg_depths args_depths_ar arg_mo
         (*              has the node `app` with arity `1` as first*)
         (*              cell, then come the elment of the list    *)
         (*              up to the 30^th elemebt                   *)
-        if h > 30 then (Path.emit path mkListEnd; update_current_min_depth path_depth)
+        if is_goal && h >= max_list_length' then (Path.emit path mkListTailVariableUnif; update_current_min_depth path_depth)
         else
-          main ~safe ~depth a path_depth;
-          list_to_trie_path ~depth ~safe ~h:(h+1) path_depth (len+1) b
+          (main ~safe ~depth a path_depth;
+          list_to_trie_path ~depth ~safe ~h:(h+1) path_depth (len+1) b)
     
     (* These cases can come from terms like `[_ | _]`, `[_ | A]` ...  *)
     | UVar _ | AppUVar _ | Arg _ | AppArg _ | Discard -> Path.emit path mkListTailVariable; update_current_min_depth path_depth
@@ -2546,6 +2606,8 @@ let arg_to_trie_path ~safe ~depth ~is_goal args arg_depths args_depths_ar arg_mo
   (** gives the path representation of a term *)
   and main ~safe ~depth t path_depth : unit =
     if path_depth = 0 then update_current_min_depth path_depth
+    else if is_goal && Path.get_builder_pos path >= path_length then 
+      (Path.emit path mkAny; update_current_min_depth path_depth)
     else
       let path_depth = path_depth - 1 in 
       match deref_head ~depth t with 
@@ -2555,7 +2617,7 @@ let arg_to_trie_path ~safe ~depth ~is_goal args arg_depths args_depths_ar arg_mo
       | CData d -> Path.emit path @@ mkPrimitive d; update_current_min_depth path_depth
       | App (k,_,_) when k == Global_symbols.uvarc -> Path.emit path @@ mkVariable; update_current_min_depth path_depth
       | App (k,a,_) when k == Global_symbols.asc -> main ~safe ~depth a (path_depth+1)
-      | Lam _ -> Path.emit path @@ mkLam; update_current_min_depth path_depth (* loose indexing to enable eta *)
+      | Lam _ -> Path.emit path mkAny; update_current_min_depth path_depth (* loose indexing to enable eta *)
       | Arg _ | UVar _ | AppArg _ | AppUVar _ | Discard -> Path.emit path @@ mkVariable; update_current_min_depth path_depth
       | Builtin (k,tl) ->
         Path.emit path @@ mkConstant ~safe ~data:k ~arity:(if path_depth = 0 then 0 else List.length tl);
@@ -2569,7 +2631,7 @@ let arg_to_trie_path ~safe ~depth ~is_goal args arg_depths args_depths_ar arg_mo
       | Cons (x,xs) ->
           Path.emit path mkListHead;
           main ~safe ~depth x (path_depth + 1);
-          list_to_trie_path ~safe ~depth (path_depth + 1) 0 xs
+          list_to_trie_path ~safe ~depth ~h:1 (path_depth + 1) 0 xs
 
   (** builds the sub-path of a sublist of arguments of the current clause  *)
   and make_sub_path arg_hd arg_tl arg_depth_hd arg_depth_tl mode_hd mode_tl = 
@@ -2586,139 +2648,216 @@ let arg_to_trie_path ~safe ~depth ~is_goal args arg_depths args_depths_ar arg_mo
     aux ~safe ~depth is_goal arg_tl arg_depth_tl mode_tl
 
   (** main function: build the path of the arguments received in entry  *)
-  and aux ~safe ~depth is_goal args arg_depths arg_mode =
-    match args, arg_depths, arg_mode with 
+  and aux ~safe ~depth is_goal args arg_depths mode =
+    match args, arg_depths, mode with 
     | _, [], _ -> ()
     | arg_hd :: arg_tl, arg_depth_hd :: arg_depth_tl, [] ->
       make_sub_path arg_hd arg_tl arg_depth_hd arg_depth_tl Output []
     | arg_hd :: arg_tl, arg_depth_hd :: arg_depth_tl, mode_hd :: mode_tl ->
-      make_sub_path arg_hd arg_tl arg_depth_hd arg_depth_tl mode_hd mode_tl 
+      make_sub_path arg_hd arg_tl arg_depth_hd arg_depth_tl (get_arg_mode mode_hd) mode_tl 
     | _, _ :: _,_ -> anomaly "Invalid Index length" in
   begin
     if args == [] then emit_mode is_goal mkOutputMode
-    else aux ~safe ~depth is_goal args (if is_goal then Array.to_list args_depths_ar else arg_depths) arg_modes
+    else aux ~safe ~depth is_goal args (if is_goal then Array.to_list args_depths_ar else arg_depths) mode
   end;
-  Path.stop path
+  Path.stop path  
 
-let add1clause ~depth m (predicate,clause) =
-  match Ptmap.find predicate m with
-  | TwoLevelIndex { all_clauses; argno; mode; flex_arg_clauses; arg_idx } ->
-      begin match classify_clause_argno ~depth argno mode clause.args with
+let make_new_Map_snd_level_index argno mode =
+  TwoLevelIndex {
+    argno;
+    mode;
+    all_clauses = Bl.empty ();
+    flex_arg_clauses = Bl.empty ();
+    arg_idx = Ptmap.empty;
+  }
+        
+let add_clause_to_snd_lvl_idx ~depth ~insert predicate clause = function
+  | TwoLevelIndex { all_clauses; argno; mode; flex_arg_clauses; arg_idx; } ->
+    begin match classify_clause_argno ~depth argno mode clause.args with
+    | Variable ->
       (* X: matches both rigid and flexible terms *)
-      | Variable ->
-        Ptmap.add predicate (TwoLevelIndex {
-          argno; mode;
-          all_clauses = clause :: all_clauses;
-          flex_arg_clauses = clause :: flex_arg_clauses;
-          arg_idx = Ptmap.map (fun l_rev -> clause :: l_rev) arg_idx;
-        }) m
-      | MustBeVariable ->
+      TwoLevelIndex {
+        argno; mode;
+        all_clauses = insert clause all_clauses;
+        flex_arg_clauses = insert clause flex_arg_clauses;
+        arg_idx = Ptmap.map (fun l_rev -> insert clause l_rev) arg_idx;
+      }
+    | MustBeVariable ->
       (* uvar: matches only flexible terms (or itself at the meta level) *)
-        let l_rev =
-          try Ptmap.find mustbevariablec arg_idx
-          with Not_found -> flex_arg_clauses in
-        Ptmap.add predicate (TwoLevelIndex {
-            argno; mode;
-          all_clauses = clause :: all_clauses;
-          flex_arg_clauses;
-          arg_idx = Ptmap.add mustbevariablec (clause::l_rev) arg_idx;
-        }) m
-      | Rigid (arg_hd,arg_mode) ->
-      (* t: a rigid term matches flexible terms only in unification mode *)
-        let l_rev =
-          try Ptmap.find arg_hd arg_idx
-          with Not_found -> flex_arg_clauses in
-        let all_clauses =
-          if arg_mode = Input then all_clauses else clause :: all_clauses in
-        Ptmap.add predicate (TwoLevelIndex {
-            argno; mode;
-          all_clauses;
-          flex_arg_clauses;
-          arg_idx = Ptmap.add arg_hd (clause::l_rev) arg_idx;
-        }) m
-      end
-  | BitHash { mode; args; time; args_idx } ->
-      let hash = hash_clause_arg_list predicate ~depth clause.args mode args in
       let clauses =
-        try Ptmap.find hash args_idx
-        with Not_found -> [] in
-      Ptmap.add predicate (BitHash {
-         mode; args;
-         time = time + 1;
-         args_idx = Ptmap.add hash ((clause,time) :: clauses) args_idx
-       }) m
-  | IndexWithDiscriminationTree {mode; arg_depths; args_idx; time } ->
+        try Ptmap.find mustbevariablec arg_idx
+        with Not_found -> flex_arg_clauses in
+      TwoLevelIndex {
+          argno; mode;
+        all_clauses = insert clause all_clauses;
+        flex_arg_clauses;
+        arg_idx = Ptmap.add mustbevariablec (insert clause clauses) arg_idx;
+      }
+    | Rigid (arg_hd,arg_mode) ->
+      (* t: a rigid term matches flexible terms only in unification mode *)
+      let clauses =
+        try Ptmap.find arg_hd arg_idx
+        with Not_found -> flex_arg_clauses in
+      let all_clauses =
+        if arg_mode = Input then all_clauses else insert clause all_clauses in
+      TwoLevelIndex {
+        argno; mode;
+        all_clauses;
+        flex_arg_clauses;
+        arg_idx = Ptmap.add arg_hd (insert clause clauses) arg_idx;
+      }
+    end
+| BitHash { mode; args; args_idx } ->
+    let hash = hash_clause_arg_list predicate ~depth clause.args mode args in
+    let clauses =
+      try Ptmap.find hash args_idx
+      with Not_found -> Bl.empty () in
+    BitHash {
+       mode; args;
+       args_idx = Ptmap.add hash (insert clause clauses) args_idx
+    }
+| IndexWithDiscriminationTree {mode; arg_depths; args_idx; } ->
     let max_depths = Discrimination_tree.max_depths args_idx in
     let max_path = Discrimination_tree.max_path args_idx in
-      let path = arg_to_trie_path ~depth ~safe:true ~is_goal:false clause.args arg_depths max_depths mode max_path in
-      [%spy "dev:disc-tree:depth-path" ~rid pp_string "Inst: MaxDepths " (pplist pp_int "") (Array.to_list max_depths)];
-      let args_idx = Discrimination_tree.index args_idx path clause ~time in
-        Ptmap.add predicate (IndexWithDiscriminationTree {
-          mode; arg_depths;
-          time = time+1;
-          args_idx = args_idx
-        }) m
-  | exception Not_found ->
-      match classify_clause_argno ~depth 0 [] clause.args with
-      | Variable ->
-      Ptmap.add predicate (TwoLevelIndex {
-        argno = 0; mode = [];
-        all_clauses = [clause];
-        flex_arg_clauses = [clause];
-        arg_idx =Ptmap.empty;
-      }) m
-      | MustBeVariable ->
-      Ptmap.add predicate (TwoLevelIndex {
-        argno = 0;mode = [];
-        all_clauses = [clause];
-        flex_arg_clauses = [];
-        arg_idx = Ptmap.add mustbevariablec [clause] Ptmap.empty;
-      }) m
-      | Rigid (arg_hd,arg_mode) ->
-      let all_clauses = if arg_mode == Input then [] else [clause] in
-      Ptmap.add predicate (TwoLevelIndex {
-        argno = 0;mode = [];
-        all_clauses;
-        flex_arg_clauses = [];
-        arg_idx = Ptmap.add arg_hd [clause] Ptmap.empty;
-      }) m
+    let max_list_length = max_lists_length clause.args in
+    (* Format.printf "[%d] Going to index [%a]\n%!" max_list_length (pplist pp_term ",") clause.args; *)
+    let path = arg_to_trie_path ~depth ~safe:true ~is_goal:false clause.args arg_depths max_depths mode max_path max_list_length in
+    [%spy "dev:disc-tree:depth-path" ~rid pp_string "Inst: MaxDepths " (pplist pp_int "") (Array.to_list max_depths)];
+    let args_idx = Discrimination_tree.index args_idx path clause ~max_list_length in
+    IndexWithDiscriminationTree {
+      mode; arg_depths;
+      args_idx = args_idx
+    }
 
-let add_clauses ~depth clauses p =
+let compile_time_tick x = x + 1
+let run_time_tick x = x - 1
+    
+let rec add1clause_runtime ~depth { idx; time; times } predicate clause =
+  try
+    let snd_lvl_idx = Ptmap.find predicate idx in
+    let time = run_time_tick time in
+    clause.timestamp <- [time];
+    let snd_lvl_idx = add_clause_to_snd_lvl_idx ~depth ~insert:Bl.cons predicate clause snd_lvl_idx in
+    { times; time; idx = Ptmap.add predicate snd_lvl_idx idx }
+  with
+  | Not_found ->
+      (* Unknown predicate, we could detect this statically and forbid it *)
+      let idx = Ptmap.add predicate (make_new_Map_snd_level_index 0 []) idx in
+      add1clause_runtime ~depth { idx; time; times } predicate clause
+
+let add_clauses ~depth clauses idx =
   (* pplist (fun fmt (hd, b) -> ppclause fmt hd b) ";" Fmt.std_formatter clauses; *)
   (* let t1 = Unix.gettimeofday () in *)
-  let p = List.fold_left (add1clause ~depth) p clauses in
+  let idx = List.fold_left (fun m (p,c) -> add1clause_runtime ~depth m p c) idx clauses in
   (* let t2 = Unix.gettimeofday () in  *)
   (* pp_string Fmt.std_formatter (Printf.sprintf "\nTime taken by add_clauses is %f\n" (t2-.t1)); *)
-  p
-
-let make_index ~depth ~indexing ~clauses_rev:p =
-  let m = C.Map.fold (fun predicate (mode, indexing) m ->
-    Ptmap.add predicate 
-    begin
-      match indexing with
-      | Hash args -> BitHash {
-          args;
-          mode;
-          time = min_int;
-          args_idx = Ptmap.empty;
-        }
-      | MapOn argno -> TwoLevelIndex {
-          argno;
-          mode;
-          all_clauses = [];
-          flex_arg_clauses = [];
-          arg_idx = Ptmap.empty;
-        }
-      | DiscriminationTree arg_depths -> IndexWithDiscriminationTree {
-          arg_depths;  mode; 
-          args_idx = Discrimination_tree.empty_dt arg_depths;
-          time = min_int;
-        }
-    end m) indexing Ptmap.empty in
-  { index = add_clauses ~depth p m; src = [] }
-
+  idx
+  
 let add_clauses ~depth clauses clauses_src { index; src } =
   { index = add_clauses ~depth clauses index; src = List.rev clauses_src @ src }
+
+let add_to_times loc name time predicate times =
+  match name with
+  | None -> times
+  | Some id ->
+    if StrMap.mem id times then
+      error ?loc ("duplicate clause name " ^ id)
+    else
+      StrMap.add id (time,predicate) times
+
+let time_of loc x times =
+  try StrMap.find x times
+  with Not_found -> error ?loc ("cannot graft, clause " ^ x ^ " not found")
+
+let remove_from_times id times = StrMap.remove id times
+    
+let remove_clause_in_snd_lvl_idx p = function
+| TwoLevelIndex { argno; mode; all_clauses; flex_arg_clauses; arg_idx; } ->
+  TwoLevelIndex {
+    argno; mode;
+    all_clauses = Bl.remove p all_clauses;
+    flex_arg_clauses = Bl.remove p flex_arg_clauses;
+    arg_idx = Ptmap.map (Bl.remove p) arg_idx;
+   }
+| BitHash { mode; args; args_idx } ->
+  BitHash {
+    mode; args;
+    args_idx = Ptmap.map (Bl.remove p) args_idx
+  }
+| IndexWithDiscriminationTree {mode; arg_depths; args_idx; } ->
+  IndexWithDiscriminationTree {
+    mode; arg_depths;
+    args_idx = Discrimination_tree.remove p args_idx;
+  }
+
+let rec add1clause_compile_time ~depth { idx; time; times } ~graft predicate clause name =
+  try
+    let snd_lvl_idx = Ptmap.find predicate idx in
+    let time = compile_time_tick time in
+    match graft with
+    | None ->
+        let timestamp = [time] in
+        let times = add_to_times clause.loc name timestamp predicate times in
+        clause.timestamp <- timestamp;
+        let snd_lvl_idx = add_clause_to_snd_lvl_idx ~depth ~insert:Bl.rcons predicate clause snd_lvl_idx in
+        { times; time; idx = Ptmap.add predicate snd_lvl_idx idx }
+    | Some (Ast.Structured.Remove x) ->
+        let reference, predicate1 = time_of clause.loc x times in
+        if predicate1 <> predicate then
+          error ?loc:clause.loc ("cannot remove a clause for another predicate");
+        let times = remove_from_times x times in
+        clause.timestamp <- reference;
+        let snd_lvl_idx = remove_clause_in_snd_lvl_idx (fun x -> x.timestamp = reference) snd_lvl_idx in
+        { times; time; idx = Ptmap.add predicate snd_lvl_idx idx }
+    | Some (Ast.Structured.Replace x) ->
+        let reference, predicate1 = time_of clause.loc x times in
+        if predicate1 <> predicate then
+          error ?loc:clause.loc ("cannot replace a clause for another predicate");
+        let times = remove_from_times x times in
+        clause.timestamp <- reference;
+        let snd_lvl_idx = remove_clause_in_snd_lvl_idx (fun x -> x.timestamp = reference) snd_lvl_idx in
+        let snd_lvl_idx = add_clause_to_snd_lvl_idx ~depth ~insert:Bl.(insert (fun x -> lex_insertion x.timestamp reference)) predicate clause snd_lvl_idx in
+        { times; time; idx = Ptmap.add predicate snd_lvl_idx idx }
+    | Some (Ast.Structured.Insert gr) ->
+        let timestamp =
+          match gr with
+          | Ast.Structured.Before x -> (fst @@ time_of clause.loc x times) @ [-time]
+          | Ast.Structured.After x  -> (fst @@ time_of clause.loc x times) @ [+time] in
+        let times = add_to_times clause.loc name timestamp predicate times in
+        clause.timestamp <- timestamp;
+        let snd_lvl_idx = add_clause_to_snd_lvl_idx ~depth ~insert:Bl.(insert (fun x -> lex_insertion x.timestamp timestamp)) predicate clause snd_lvl_idx in
+        { times; time; idx = Ptmap.add predicate snd_lvl_idx idx }
+  with Not_found ->
+      let idx = Ptmap.add predicate (make_new_Map_snd_level_index 0 []) idx in
+      add1clause_compile_time ~depth { idx; time; times } ~graft predicate clause name
+
+let update_indexing (indexing : (mode * indexing) Constants.Map.t) (index : index) : index =
+  let idx =
+    C.Map.fold (fun predicate (mode, indexing) m ->
+      Ptmap.add predicate 
+      begin
+        match indexing with
+        | Hash args -> BitHash {
+            args;
+            mode;
+            args_idx = Ptmap.empty;
+          }
+        | MapOn argno -> make_new_Map_snd_level_index argno mode
+        | DiscriminationTree arg_depths -> IndexWithDiscriminationTree {
+            arg_depths;  mode; 
+            args_idx = Discrimination_tree.empty_dt arg_depths;
+          }
+      end m) indexing index.idx
+    in
+      { index with idx }
+
+let add_to_index ~depth ~predicate ~graft clause name index : index =
+  add1clause_compile_time ~depth ~graft index predicate clause name
+
+let make_empty_index ~depth ~indexing =
+  let index = update_indexing indexing { idx = Ptmap.empty; time = 0; times = StrMap.empty } in
+  let index = close_index index in
+  { index; src = [] }
 
 type goal_arg_classification =
   | Variable
@@ -2772,7 +2911,9 @@ let trie_goal_args goal : term list = match goal with
   | App(_, x, xs) -> x :: xs
   | _ -> assert false
 
-let get_clauses ~depth predicate goal { index = m } =
+let cmp_timestamp { timestamp = tx } { timestamp = ty } = lex_insertion tx ty
+
+let get_clauses ~depth predicate goal { index = { idx = m } } =
  let rc =
    try
      match Ptmap.find predicate m with
@@ -2782,29 +2923,31 @@ let get_clauses ~depth predicate goal { index = m } =
        | Rigid arg_hd ->
           try Ptmap.find arg_hd arg_idx
           with Not_found -> flex_arg_clauses
-       end
+       end |> Bl.to_scan
      | BitHash { args; mode; args_idx } ->
        let hash = hash_goal_args ~depth mode args goal in
-       let cl = List.flatten (Ptmap.find_unifiables hash args_idx) in
-       List.(map fst (sort (fun (_,cl1) (_,cl2) -> cl2 - cl1) cl))
+       let cl = Ptmap.find_unifiables hash args_idx |> List.map Bl.to_scan |> List.map Bl.to_list |> List.flatten in
+       Bl.of_list @@ List.sort cmp_timestamp cl
      | IndexWithDiscriminationTree {arg_depths; mode; args_idx} ->
         let max_depths = Discrimination_tree.max_depths args_idx in
         let max_path = Discrimination_tree.max_path args_idx in
-        let (path: Discrimination_tree.Path.t) = arg_to_trie_path ~safe:false ~depth ~is_goal:true (trie_goal_args goal) arg_depths max_depths mode max_path in
+        let max_list_length = Discrimination_tree.max_list_length args_idx in
+        let path = arg_to_trie_path ~safe:false ~depth ~is_goal:true (trie_goal_args goal) arg_depths max_depths mode max_path max_list_length in
         [%spy "dev:disc-tree:depth-path" ~rid pp_string "Goal: MaxDepths " (pplist pp_int ";") (Array.to_list max_depths)];
+        [%spy "dev:disc-tree:list-size-path" ~rid pp_string "Goal: MaxListSize " pp_int max_list_length];
         (* Format.(printf "Goal: MaxDepth is %a\n" (pp_print_list ~pp_sep:(fun fmt _ -> pp_print_string fmt " ") pp_print_int) (Discrimination_tree.max_depths args_idx |> Array.to_list)); *)
         [%spy "dev:disc-tree:path" ~rid 
           Discrimination_tree.Path.pp path
           (pplist pp_int ";") arg_depths
           (*Discrimination_tree.(pp (fun fmt x -> pp_string fmt "+")) args_idx*)];
-        let candidates = Discrimination_tree.retrieve path args_idx in 
+        let candidates = Discrimination_tree.retrieve cmp_timestamp path args_idx in 
           [%spy "dev:disc-tree:candidates" ~rid 
-            pp_int (List.length candidates)];
+            pp_int (Bl.length candidates)];
         candidates
-   with Not_found -> []
+   with Not_found -> Bl.of_list []
  in
- [%log "get_clauses" ~rid (C.show predicate) (List.length rc)];
- [%spy "dev:get_clauses" ~rid C.pp predicate pp_int (List.length rc)];
+ [%log "get_clauses" ~rid (C.show predicate) (Bl.length rc)];
+ [%spy "dev:get_clauses" ~rid C.pp predicate pp_int (Bl.length rc)];
  rc
 
 (* flatten_snd = List.flatten o (List.map ~~snd~~) *)
@@ -2858,7 +3001,7 @@ end (* }}} *)
 open Indexing
 
 (* Used to pass the program to the CHR runtime *)
-let orig_prolog_program = Fork.new_local (make_index ~depth:0 ~indexing:C.Map.empty ~clauses_rev:[])
+let orig_prolog_program = Fork.new_local (make_empty_index ~depth:0 ~indexing:C.Map.empty)
 
 (******************************************************************************
   Dynamic Prolog program
@@ -2868,7 +3011,7 @@ module Clausify : sig
 
   val clausify : loc:Loc.t option -> prolog_prog -> depth:int -> term -> (constant*clause) list * clause_src list * int
 
-  val clausify1 : loc:Loc.t -> mode C.Map.t -> nargs:int -> depth:int -> term -> (constant*clause) * clause_src * int
+  val clausify1 : loc:Loc.t -> modes:(constant -> mode) -> nargs:int -> depth:int -> term -> (constant*clause) * clause_src * int
   
   (* Utilities that deref on the fly *)
   val lp_list_to_list : depth:int -> term -> term list
@@ -2996,7 +3139,7 @@ let rec claux1 loc get_mode vars depth hyps ts lts lcs t =
            type_error ?loc "The head of a clause cannot be a builtin data type"
        | Cons _ | Nil -> assert false
      in
-     let c = { depth = depth+lcs; args; hyps; mode = get_mode hd; vars; loc } in
+     let c = { depth = depth+lcs; args; hyps; mode = get_mode hd; vars; loc; timestamp = [] } in
      [%spy "dev:claudify:extra-clause" ~rid (ppclause ~hd) c];
      (hd,c), { hdepth = depth; hsrc = g }, lcs
   | UVar ({ contents=g },from,args) when g != C.dummy ->
@@ -3014,7 +3157,7 @@ let rec claux1 loc get_mode vars depth hyps ts lts lcs t =
   | Nil | Cons _ -> error ?loc "ill-formed hypothetical clause"
   end]
 
-let clausify ~loc { index } ~depth t =
+let clausify ~loc { index = { idx = index } } ~depth t =
   let get_mode x =
     match Ptmap.find x index with
     | TwoLevelIndex { mode } -> mode
@@ -3033,9 +3176,8 @@ let clausify ~loc { index } ~depth t =
   clauses, program, lcs
 ;;
 
-let clausify1 ~loc m ~nargs ~depth t =
-  claux1 (Some loc) (fun x -> try C.Map.find x m with Not_found -> [])
-    nargs depth [] [] 0 0 t
+let clausify1 ~loc ~modes ~nargs ~depth t =
+  claux1 (Some loc) modes nargs depth [] [] 0 0 t
 
 end (* }}} *)
 open Clausify
@@ -3081,7 +3223,7 @@ and alternative = {
   stack : frame;
   trail : T.trail;
   state : State.t;
-  clauses : clause list;
+  clauses : clause Bl.scan;
   next : alternative;
 }
 let noalts : alternative = Obj.magic (Sys.opaque_identity 0)
@@ -3852,12 +3994,12 @@ let make_runtime : ?max_steps: int -> ?delay_outside_fragment: bool -> 'x execut
     | Const k ->
        let clauses = get_clauses ~depth k g p in
        [%spy "user:rule" ~rid ~gid pp_string "backchain"];
-       [%spyl "user:rule:backchain:candidates" ~rid ~gid (pp_candidate ~depth ~k) clauses];
+       [%spyl "user:rule:backchain:candidates" ~rid ~gid (pp_candidate ~depth ~k) (Bl.to_list clauses)];
        [%tcall backchain depth p (k, C.dummy, [], gs) (gid[@trace]) next alts cutto_alts clauses]
     | App (k,x,xs) ->
        let clauses = get_clauses ~depth k g p in
        [%spy "user:rule" ~rid ~gid pp_string "backchain"];
-       [%spyl "user:rule:backchain:candidates" ~rid ~gid (pp_candidate ~depth ~k) clauses];
+       [%spyl "user:rule:backchain:candidates" ~rid ~gid (pp_candidate ~depth ~k) (Bl.to_list clauses)];
        [%tcall backchain depth p (k, x, xs, gs) (gid[@trace]) next alts cutto_alts clauses]
     | Builtin(c, args) -> [%spy "user:rule" ~rid ~gid pp_string "builtin"]; [%spy "user:rule:builtin:name" ~rid ~gid pp_string (C.show c)];
        let once ~depth g state =
@@ -3884,13 +4026,14 @@ let make_runtime : ?max_steps: int -> ?delay_outside_fragment: bool -> 'x execut
 
   (* We pack some arguments into a tuple otherwise we consume too much stack *)
   and backchain depth p (k, arg, args_of_g, gs) (gid[@trace]) next alts cutto_alts cp = [%trace "select" ~rid begin
-    match cp with
-      | [] -> [%spy "user:rule:backchain" ~rid ~gid pp_string "fail"];
+    if Bl.is_empty cp then begin
+        [%spy "user:rule:backchain" ~rid ~gid pp_string "fail"];
         [%tcall next_alt alts]
-      | { depth = c_depth; mode = c_mode; args = c_args; hyps = c_hyps; vars = c_vars; loc } :: cs ->
-        [%spy "user:rule:backchain:try" ~rid ~gid (pp_option Util.CData.pp) (Util.option_map Ast.cloc.Util.CData.cin loc) (ppclause ~hd:k) { depth = c_depth; mode = c_mode; args = c_args; hyps = c_hyps; vars = c_vars; loc }];
+    end else
+      let { depth = c_depth; mode = c_mode; args = c_args; hyps = c_hyps; vars = c_vars; loc }, cs = Bl.next cp in
+        [%spy "user:rule:backchain:try" ~rid ~gid (pp_option Util.CData.pp) (Util.option_map Ast.cloc.Util.CData.cin loc) (ppclause ~hd:k) { depth = c_depth; mode = c_mode; args = c_args; hyps = c_hyps; vars = c_vars; loc; timestamp = [] }];
         let old_trail = !T.trail in
-        T.last_call := alts == noalts && cs == [];
+        T.last_call := alts == noalts && Bl.is_empty cs;
         let env = Array.make c_vars C.dummy in
         match
           match c_args with
@@ -3898,13 +4041,13 @@ let make_runtime : ?max_steps: int -> ?delay_outside_fragment: bool -> 'x execut
           | x :: xs -> arg != C.dummy &&
              match c_mode with
              | [] -> unif ~argsdepth:depth ~matching:false (gid[@trace]) depth env c_depth arg x && for_all23 ~argsdepth:depth (unif (gid[@trace])) depth env c_depth args_of_g xs
-             | arg_mode :: ms -> unif ~argsdepth:depth ~matching:(arg_mode == Input) (gid[@trace]) depth env c_depth arg x && for_all3b3 ~argsdepth:depth (unif (gid[@trace])) depth env c_depth args_of_g xs ms false
+             | arg_mode :: ms -> unif ~argsdepth:depth ~matching:(get_arg_mode arg_mode == Input) (gid[@trace]) depth env c_depth arg x && for_all3b3 ~argsdepth:depth (unif (gid[@trace])) depth env c_depth args_of_g xs ms false
         with
         | false ->
             T.undo ~old_trail (); [%tcall backchain depth p (k, arg, args_of_g, gs) (gid[@trace]) next alts cutto_alts cs]
         | true ->
            let oldalts = alts in
-           let alts = if cs = [] then alts else
+           let alts = if Bl.is_empty cs then alts else
              { program = p; adepth = depth; agoal_hd = k; ogoal_arg = arg; ogoal_args = args_of_g; agid = gid[@trace]; goals = gs; stack = next;
                trail = old_trail;
                state = !CS.state;
@@ -3934,7 +4077,7 @@ let make_runtime : ?max_steps: int -> ?delay_outside_fragment: bool -> 'x execut
         if alts != cutto_alts then begin
           List.iter (fun c -> 
             [%spy "user:rule:cut:branch" ~rid UUID.pp agid (pp_option Util.CData.pp) (Util.option_map Ast.cloc.Util.CData.cin c.loc) (ppclause ~hd) c])
-          clauses;
+          (clauses |> Bl.to_list);
           prune alts.next
         end
       in
@@ -4090,7 +4233,7 @@ end;*)
     [%cur_pred (Some (C.show k))];
     [%spyl "user:curgoal" ~rid ~gid (uppterm depth [] ~argsdepth:0 empty_env) [Const k;App(k,arg,args)]];
     [%spy "user:rule" ~rid ~gid pp_string "backchain"];
-    [%spyl "user:rule:backchain:candidates" ~rid ~gid (pp_candidate ~depth ~k) clauses];
+    [%spyl "user:rule:backchain:candidates" ~rid ~gid (pp_candidate ~depth ~k) (Bl.to_list clauses)];
     [%tcall backchain depth p (k, arg, args, gs) (gid[@trace]) next alts cutto_alts clauses]
     end]
   in
@@ -4209,10 +4352,9 @@ let mkAppArg = HO.mkAppArg
 let subst ~depth = HO.subst depth
 let move = HO.move
 let hmove = HO.hmove
-let make_index = make_index
-let clausify1 = Clausify.clausify1
 let mkinterval = C.mkinterval
 let mkAppL = C.mkAppL
+let lex_insertion = lex_insertion
 
 let expand_uv ~depth r ~lvl ~ano =
   let t, assignment = HO.expand_uv ~depth r ~lvl ~ano in
@@ -4223,5 +4365,8 @@ let expand_appuv ~depth r ~lvl ~args =
   option_iter (fun (r,_,assignment) -> r @:= assignment) assignment;
   t
 
-
-(* vim: set foldmethod=marker: *)
+module CompileTime = struct
+  let update_indexing = update_indexing
+  let add_to_index = add_to_index
+  let clausify1 = Clausify.clausify1  
+end
