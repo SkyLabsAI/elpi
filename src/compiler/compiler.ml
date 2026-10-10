@@ -1132,7 +1132,7 @@ end = struct
       if ta_t_captures <> [] then begin
         let ta, tsd, (_, oloc) = List.hd ta_t_captures in
         let tad = List.assoc ta type_abbrevs in
-        error ~loc:tad.ScopedTypeExpression.loc ("Illegal type abbreviation for " ^ F.show ta ^ ". A type with the same name already exists in " ^ Loc.show oloc)
+        error ~loc:tad.ScopedTypeExpression.loc ("Illegal type abbreviation for " ^ F.show ta ^ ". A type with the same name already exists in " ^ Loc.show_for_display oloc)
       end;
       let defs_k = defs_of_map kinds in
       let defs_t = defs_of_map types in
@@ -1337,7 +1337,7 @@ module Flatten : sig
       if TypeAssignment.compare_skema sk ty <> 0 then
         error ~loc
         ("Duplicate type abbreviation for " ^ F.show k ^
-          ". Previous declaration: " ^ Loc.show otherloc)
+          ". Previous declaration: " ^ Loc.show_for_display otherloc)
       else
         Some x) m1 m2 in
       m
@@ -1348,7 +1348,7 @@ module Flatten : sig
   let merge_kinds (t1 : Arity.t F.Map.t) t2 =
       F.Map.union (fun f (k,loc1 as kdecl) (k',loc2) ->
         if k == k' then Some kdecl
-        else error ~loc:loc2 ("Duplicate kind declaration for " ^ F.show f ^ ". Previously declared in " ^ Loc.show loc1);
+        else error ~loc:loc2 ("Duplicate kind declaration for " ^ F.show f ^ ". Previously declared in " ^ Loc.show_for_display loc1);
         ) t1 t2
 
   let merge_type_abbrevs m1 m2 = m1 @ m2
@@ -1382,7 +1382,7 @@ module Flatten : sig
       let ta_t_captures = List.filter_map (fun (k,loc) -> if F.Map.mem k kinds then Some (k,loc,F.Map.find k kinds) else None) type_abbrevs in
       if ta_t_captures <> [] then begin
         let ta, tad,(_,oloc) = List.hd ta_t_captures in
-        error ~loc:tad.ScopedTypeExpression.loc ("Illegal type abbreviation for " ^ F.show ta ^ ". A type with the same name already exists in " ^ Loc.show oloc)
+        error ~loc:tad.ScopedTypeExpression.loc ("Illegal type abbreviation for " ^ F.show ta ^ ". A type with the same name already exists in " ^ Loc.show_for_display oloc)
       end;
       let kinds, types, type_abbrevs, clauses, chr =
         compile_block kinds types type_abbrevs clauses chr new_pred_subst new_ty_subst body in
@@ -1444,10 +1444,10 @@ end = struct
           if TypeAssignment.compare_skema sk ty <> 0 then
           error ~loc
             ("Duplicate type abbreviation for " ^ F.show name ^
-              ". Previous declaration: " ^ Loc.show otherloc)
+              ". Previous declaration: " ^ Loc.show_for_display otherloc)
         end;
         if F.Map.mem name ots && not (Loc.equal (F.Map.find name ots) loc) then begin
-          error ~loc ("Illegal type abbreviation for " ^ F.show name ^ ". A type with the same name already exists in " ^ Loc.show (F.Map.find name ots))
+          error ~loc ("Illegal type abbreviation for " ^ F.show name ^ ". A type with the same name already exists in " ^ Loc.show_for_display (F.Map.find name ots))
         end;
         F.Map.add name (ty,loc) all_type_abbrevs,
         F.Map.add name (ty,loc) type_abbrevs,
@@ -2155,7 +2155,7 @@ let extend1_signature base_signature ({ signature } : checked_compilation_unit_s
   let { Assembled.kinds = ok; types = ot; type_abbrevs = ota; toplevel_macros = otlm; ty_names = ots } = base_signature in
   let { Assembled.toplevel_macros; kinds; types; type_abbrevs; ty_names } = signature in
   let kinds = Flatten.merge_kinds ok kinds in
-  F.Map.iter (fun k (_,loc) -> if F.Map.mem k ots && not (Loc.equal loc (F.Map.find k ots)) then error ~loc ("Illegal type abbreviation for " ^ F.show k ^ ". A type with the same name already exists in " ^ Loc.show (F.Map.find k ots))) type_abbrevs;
+  F.Map.iter (fun k (_,loc) -> if F.Map.mem k ots && not (Loc.equal loc (F.Map.find k ots)) then error ~loc ("Illegal type abbreviation for " ^ F.show k ^ ". A type with the same name already exists in " ^ Loc.show_for_display (F.Map.find k ots))) type_abbrevs;
   let type_abbrevs = Flatten.merge_checked_type_abbrevs ota type_abbrevs in
   let types = Flatten.merge_type_assignments ot types in
   let toplevel_macros = Flatten.merge_toplevel_macros types otlm toplevel_macros in
@@ -2640,7 +2640,7 @@ let relocate_closed_term ~from:symbol_table ~to_:(_,{ Assembled.symbols; signatu
         begin match List.filter (fun x -> get_variant s = get_variant x) l with
         | [] -> None
         | [x] -> SymbolMap.get_global_symbol symbols x
-        | x1::x2::_ -> anomaly ("Cannot relocate overloaded symbol " ^ F.show f ^"\nDeclarations:\n - " ^ Loc.show (Symbol.get_loc x1) ^ "\n - " ^ Loc.show (Symbol.get_loc x2))
+        | x1::x2::_ -> anomaly ("Cannot relocate overloaded symbol " ^ F.show f ^"\nDeclarations:\n - " ^ Loc.show_for_display (Symbol.get_loc x1) ^ "\n - " ^ Loc.show_for_display (Symbol.get_loc x2))
         end
       | exception Not_found -> None in
     match c with

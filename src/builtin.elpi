@@ -406,7 +406,7 @@ kind loc type.
 
 
 % [loc.fields Loc File StartChar StopChar Line LineStartsAtChar] Decomposes
-% a loc into its fields
+% a loc into its fields, resolving File in the current environment
 external func loc.fields loc -> string, int, int, int, int.
 
 % == Regular Expressions =====================================

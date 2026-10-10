@@ -12,7 +12,7 @@ module type Parser = sig
   val goal : loc:Util.Loc.t -> text:string -> Ast.Goal.t
   
   val goal_from : loc:Util.Loc.t -> Lexing.lexbuf -> Ast.Goal.t
-  val program_from : loc:Util.Loc.t -> digest:Digest.t -> Lexing.lexbuf -> Ast.Program.t
+  val program_from : ?cwd:string -> loc:Util.Loc.t -> digest:Digest.t -> Lexing.lexbuf -> Ast.Program.t
 end
 
 module type Parser_w_Internals = sig
@@ -31,14 +31,20 @@ module type Config = sig
 
 end
 
-module Make(C : Config) = struct
+module Make_core(C : Config)(Source : sig
+  val name : string -> string
+  val physical_includes : bool
+end) = struct
   
 let parse_ref : (?cwd:string -> string -> Ast.Program.t) ref =
   ref (fun ?cwd:_ _ -> assert false)
   
 
 module ParseFile = struct
-  let parse_file ?cwd file = !parse_ref ?cwd file
+  let physical_directory = ref None
+  let parse_file ?cwd file =
+    let cwd = match !physical_directory with Some _ as dir -> dir | None -> cwd in
+    !parse_ref ?cwd file
   let client_payload : Obj.t option ref = ref None
   let set_current_clent_loc_pyload x = client_payload := Some x
   let get_current_client_loc_payload () = !client_payload
@@ -91,17 +97,25 @@ let already_parsed = Hashtbl.create 11
 let cleanup_fname filename = Re.Str.replace_first (Re.Str.regexp "/_build/[^/]+") "" filename
 
 let parse_one_file digest filename =
-  if Hashtbl.mem already_parsed digest then
-    Hashtbl.find already_parsed digest
+  let name = Source.name filename in
+  let key = digest, (if Source.physical_includes then name else "") in
+  if Hashtbl.mem already_parsed key then
+    Hashtbl.find already_parsed key
   else 
     let ic = open_in filename in
     let lexbuf = Lexing.from_channel ic in
-    let dest = cleanup_fname filename in
+    let dest = if Source.physical_includes then name else cleanup_fname name in
     lexbuf.Lexing.lex_curr_p <- { lexbuf.lex_curr_p with pos_fname = dest };
-    let ast = parse Grammar.Incremental.program lexbuf in
-    let output = { Ast.file_name = filename; deps = []; digest; ast } in
-    Hashtbl.add already_parsed digest output;
-    close_in ic;
+    let previous_directory = !ParseFile.physical_directory in
+    ParseFile.physical_directory := Some (Filename.dirname
+      (if Source.physical_includes then filename else dest));
+    let ast = Fun.protect
+      ~finally:(fun () ->
+        ParseFile.physical_directory := previous_directory;
+        close_in ic)
+      (fun () -> parse Grammar.Incremental.program lexbuf) in
+    let output = { Ast.file_name = name; deps = []; digest; ast } in
+    Hashtbl.add already_parsed key output;
     output
 
 let () =
@@ -115,7 +129,7 @@ let () =
       let ds = Digest.file sig_filename in
       let s = parse_one_file ds sig_filename in
       let m = parse_one_file digest filename in
-      { Ast.file_name = filename; digest = Digest.string (ds^digest); deps = []; ast = s.ast @ m.ast  }
+      { Ast.file_name = Source.name filename; digest = Digest.string (ds^digest); deps = []; ast = s.ast @ m.ast  }
     else parse_one_file digest filename
   else parse_one_file digest filename)
 
@@ -141,10 +155,16 @@ let goal ~loc ~text =
   let lexbuf = Lexing.from_string text in
   goal_from ~loc lexbuf
 
-let program_from ~loc ~digest lexbuf =
+let program_from ?cwd ~loc ~digest lexbuf =
   Hashtbl.clear already_parsed;
   lexing_set_position lexbuf loc;
-  let ast = parse Grammar.Incremental.program lexbuf in
+  let previous_directory = !ParseFile.physical_directory in
+  ParseFile.physical_directory := Some (match cwd with
+    | Some directory -> directory
+    | None -> Filename.dirname loc.Util.Loc.source_name);
+  let ast = Fun.protect
+    ~finally:(fun () -> ParseFile.physical_directory := previous_directory)
+    (fun () -> parse Grammar.Incremental.program lexbuf) in
   let filename = let open Util.Loc in
     Printf.sprintf "%s:%d:%d" loc.source_name loc.source_stop lexbuf.Lexing.lex_curr_pos in
   { Ast.file_name = filename; deps = []; digest; ast }
@@ -161,3 +181,15 @@ let postfix_SYMB = Grammar.postfix_SYMB
 end
 
 end
+
+module Make_with_source_names(C : Config)(Source : sig
+  val name : string -> string
+end) = Make_core(C)(struct
+  let name = Source.name
+  let physical_includes = true
+end)
+
+module Make(C : Config) = Make_core(C)(struct
+  let name x = x
+  let physical_includes = false
+end)

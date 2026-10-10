@@ -13,7 +13,9 @@ module type Parser = sig
   val goal : loc:Util.Loc.t -> text:string -> Ast.Goal.t
   
   val goal_from : loc:Util.Loc.t -> Lexing.lexbuf -> Ast.Goal.t
-  val program_from : loc:Util.Loc.t -> digest:Digest.t -> Lexing.lexbuf -> Ast.Program.t
+  (** [cwd] overrides the physical base for relative accumulations, otherwise
+      the directory of [loc.source_name] is used. *)
+  val program_from : ?cwd:string -> loc:Util.Loc.t -> digest:Digest.t -> Lexing.lexbuf -> Ast.Program.t
 end
 
 module type Parser_w_Internals = sig
@@ -32,3 +34,10 @@ module type Config = sig
 end
 
 module Make(C : Config) : Parser_w_Internals
+
+(** Parse the physical files returned by [C.resolver], but retain [Source.name]
+    in AST file identities and locations. Relative accumulations continue to
+    resolve from the physical parent directory. *)
+module Make_with_source_names(C : Config)(Source : sig
+  val name : string -> string
+end) : Parser_w_Internals

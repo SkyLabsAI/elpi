@@ -105,6 +105,10 @@ module Loc : sig
   }
   val pp : Format.formatter -> t -> unit
   val show : t -> string
+  val show_for_display : t -> string
+  (** Resolve a stored identity in the current environment, without modifying it. *)
+  val source_name : t -> string
+  val set_source_name_resolver : (string -> string) -> unit
   val equal : t -> t -> bool
   val compare : t -> t -> int
 
