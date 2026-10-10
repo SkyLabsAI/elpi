@@ -26,6 +26,8 @@ module Ast : sig
     }
     val pp : Format.formatter -> t -> unit
     val show : t -> string
+    (** Current filename resolved without altering the stored [source_name] field. *)
+    val source_name : t -> string
     val equal : t -> t -> bool
     val compare : t -> t -> int
 
@@ -172,6 +174,10 @@ module Setup : sig
         resolver returns the abslute file name
         (possibly adjusting the unit extension). By default it fails.
         See also {!val:Parse.std_resolver}.
+      @param source_name maps the resolved physical file name to the identity
+        retained in parsed programs and locations. When supplied, relative
+        accumulations use the physical file's parent directory. When omitted,
+        file identities and legacy source-directory resolution are unchanged.
 
       @return a handle [elpi] to an elpi instance equipped with the given
         [builtins] and where accumulate resolves files with the given
@@ -185,11 +191,17 @@ module Setup : sig
     ?calc:calc_descriptor ->
     builtins:builtins list ->
     ?file_resolver:(?cwd:string -> unit:string -> unit -> string) ->
+    ?source_name:(string -> string) ->
     unit ->
     elpi
 
   (** Usage string *)
   val usage : string
+
+  (** Resolve stored source identities to current filenames for diagnostics and
+      [loc.fields]. The default is identity. This process-wide hook does not
+      alter stored locations, equality, serialization, or compiled IDs. *)
+  val set_source_name_resolver : (string -> string) -> unit
 
   (** Set tracing options.
       [trace argv] can be called before {!module:Execute}.
@@ -214,7 +226,11 @@ module Parse : sig
       Raises Failure if the file does not exist. *)
   val program : elpi:Setup.elpi ->
     file:string -> Ast.program
+  (** [cwd] is the physical base directory for relative accumulations, useful
+      when [loc.source_name] is a logical identity. By default the directory of
+      [loc.source_name] is used. *)
   val program_from : elpi:Setup.elpi ->
+    ?cwd:string ->
     loc:Ast.Loc.t -> digest:Digest.t -> Lexing.lexbuf -> Ast.program
 
   (** [goal file_list] parses the query,

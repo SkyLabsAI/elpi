@@ -47,3 +47,5 @@
 
 (test (name test_lexer) (libraries elpi_parser str) (modules test_lexer) (preprocess (pps ppx_deriving.std)))
 (test (name test_parser) (libraries elpi_parser str menhirLib) (modules test_parser) (preprocess (pps ppx_deriving.std)))
+
+(test (name test_source_names) (libraries elpi_parser unix) (modules test_source_names))

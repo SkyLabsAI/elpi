@@ -159,7 +159,12 @@ module Loc = struct
              line (source_start - line_starts_at) chars in
     Re.(Str.global_replace (Str.regexp_string "\\") "/" source) ^ pos ^ ":"
 
-  let pp fmt l =Fmt.fprintf fmt "@[%s@]" (to_string l)
+  let source_name_resolver = ref Fun.id
+  let set_source_name_resolver f = source_name_resolver := f
+  let source_name l = !source_name_resolver l.source_name
+  let show_for_display l =
+    to_string { l with source_name = source_name l }
+  let pp fmt l =Fmt.fprintf fmt "@[%s@]" (show_for_display l)
   let show l = to_string l
 
   (* WARNING: loc comparison must be correct, otherwise two occurrences of

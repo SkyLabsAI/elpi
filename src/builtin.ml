@@ -652,9 +652,9 @@ counter C N :- trace.counter C N.|};
     Out(int, "StopChar",
     Out(int, "Line",
     Out(int, "LineStartsAtChar",
-    Easy "Decomposes a loc into its fields")))))),
-  (fun { source_name; source_start; source_stop; line; line_starts_at; } _ _ _ _ _ ~depth:_ ->
-     !: source_name +! source_start +! source_stop +! line +! line_starts_at )),
+    Easy "Decomposes a loc into its fields, resolving File in the current environment")))))),
+  (fun ({ source_start; source_stop; line; line_starts_at; _ } as loc) _ _ _ _ _ ~depth:_ ->
+     !: (Ast.Loc.source_name loc) +! source_start +! source_stop +! line +! line_starts_at )),
   DocAbove);
 
   LPDoc "== Regular Expressions =====================================";

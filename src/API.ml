@@ -47,14 +47,18 @@ type elpi = {
 type flags = Compiler.flags
 
 
-let init ?(versions=Elpi_util.Util.StrMap.empty) ?(flags=Compiler.default_flags) ?(state=default_state_descriptor) ?(quotations=default_quotations_descriptor) ?(hoas=default_hoas_descriptor) ?(calc=default_calc_descriptor) ~builtins ?file_resolver () : elpi =
+let init ?(versions=Elpi_util.Util.StrMap.empty) ?(flags=Compiler.default_flags) ?(state=default_state_descriptor) ?(quotations=default_quotations_descriptor) ?(hoas=default_hoas_descriptor) ?(calc=default_calc_descriptor) ~builtins ?file_resolver ?source_name () : elpi =
   (* At the moment we can only init the parser once *)
   let file_resolver =
     match file_resolver with
     | Some x -> x
     | None -> fun ?cwd:_ ~unit:_ () ->
         raise (Failure "'accumulate' is disabled since Setup.init was not given a ~file_resolver.") in
-  let parser = (module Parse.Make(struct let versions = versions let resolver = file_resolver end) : Parse.Parser) in
+  let module Config = struct let versions = versions let resolver = file_resolver end in
+  let parser = match source_name with
+    | None -> (module Parse.Make(Config) : Parse.Parser)
+    | Some name -> (module Parse.Make_with_source_names(Config)
+        (struct let name = name end) : Parse.Parser) in
   Data.Global_symbols.lock ();
   let header =
     try Compiler.header_of_ast ~flags ~parser state !quotations !hoas !calc builtins
@@ -72,6 +76,7 @@ let set_error = Util.set_error
 let set_anomaly = Util.set_anomaly
 let set_type_error = Util.set_type_error
 let set_std_formatter = Util.set_std_formatter
+let set_source_name_resolver = Util.Loc.set_source_name_resolver
 let set_err_formatter fmt =
   Util.set_err_formatter fmt; Trace_ppx_runtime.Runtime.(set_trace_output TTY fmt)
 
@@ -101,9 +106,9 @@ module Parse = struct
     let module P = (val parser) in
     P.program ~file
 
-  let program_from ~elpi:{ Setup.parser } ~loc ~digest buf =
+  let program_from ~elpi:{ Setup.parser } ?cwd ~loc ~digest buf =
     let module P = (val parser) in
-    P.program_from ~loc ~digest buf
+    P.program_from ?cwd ~loc ~digest buf
 
   let goal ~elpi:{ Setup.parser } ~loc ~text =
     let module P = (val parser) in
