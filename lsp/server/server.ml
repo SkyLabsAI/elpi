@@ -220,7 +220,7 @@ let initialize (params : InitializeParams.t) =
   let capabilities = ServerCapabilities.create ~textDocumentSync
       ~hoverProvider:(`Bool true) ~definitionProvider:(`Bool true) ~documentHighlightProvider:(`Bool true) ~semanticTokensProvider () in
   InitializeResult.create ~capabilities
-    ~serverInfo:(InitializeResult.create_serverInfo ~name:"elpi-lsp" ~version:"0.1" ()) ()
+    ~serverInfo:(ServerInfo.create ~name:"elpi-lsp" ~version:"0.1" ()) ()
 
 (* the text of a file, to convert the location of a definition *)
 let text_of_file doc file =
@@ -465,7 +465,8 @@ let handle_notification : Lsp.Client_notification.t -> unit = function
   | TextDocumentDidChange { textDocument = { uri; version }; contentChanges } ->
       (* full synchronization: the last change is the whole text *)
       (match List.rev contentChanges with
-       | { text; range = None; _ } :: _ -> set_text uri version text
+       | `TextDocumentContentChangeWholeDocument { text } :: _ ->
+           set_text uri version text
        | _ -> log "ignoring an incremental change")
   | DidSaveTextDocument { textDocument = { uri }; _ } ->
       (* the other documents may accumulate files on the disk that changed
@@ -480,7 +481,7 @@ let handle_notification : Lsp.Client_notification.t -> unit = function
       Hashtbl.remove documents uri;
       Hashtbl.remove dirty uri;
       send_notification (PublishDiagnostics (PublishDiagnosticsParams.create ~uri ~diagnostics:[] ()))
-  | Initialized -> ()
+  | Initialized _ -> ()
   | SetTrace { value } -> Checker.set_trace value
   | CancelRequest _ ->
       (* a request is answered as soon as it is read: none is pending *)

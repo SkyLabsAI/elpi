@@ -38,7 +38,7 @@ val max_errors : int ref
 (** the trace level asked by the client: [Messages] logs the time of the
     phases of a check, [Verbose] also the units of the program (as the
     environment variable ELPI_LSP_PROFILE does for the time) *)
-val set_trace : Lsp.Types.TraceValues.t -> unit
+val set_trace : Lsp.Types.TraceValue.t -> unit
 
 (** An error of Elpi (or any exception), as a location and a message *)
 val error_of_exn : exn -> Ast.Loc.t option * string

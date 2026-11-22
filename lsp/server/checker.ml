@@ -185,9 +185,9 @@ let resilient_parse ~elpi ~path text =
 let profile = ref (Option.is_some (Sys.getenv_opt "ELPI_LSP_PROFILE"))
 let verbose = ref false
 let set_trace = function
-  | Lsp.Types.TraceValues.Off -> profile := Option.is_some (Sys.getenv_opt "ELPI_LSP_PROFILE"); verbose := false
-  | Lsp.Types.TraceValues.Messages | Compact -> profile := true; verbose := false
-  | Lsp.Types.TraceValues.Verbose -> profile := true; verbose := true
+  | Lsp.Types.TraceValue.Off -> profile := Option.is_some (Sys.getenv_opt "ELPI_LSP_PROFILE"); verbose := false
+  | Lsp.Types.TraceValue.Messages | Compact -> profile := true; verbose := false
+  | Lsp.Types.TraceValue.Verbose -> profile := true; verbose := true
 
 let timed what f =
   if not !profile then f () else begin
