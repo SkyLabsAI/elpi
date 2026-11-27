@@ -186,7 +186,7 @@ let profile = ref (Option.is_some (Sys.getenv_opt "ELPI_LSP_PROFILE"))
 let verbose = ref false
 let set_trace = function
   | Lsp.Types.TraceValue.Off -> profile := Option.is_some (Sys.getenv_opt "ELPI_LSP_PROFILE"); verbose := false
-  | Lsp.Types.TraceValue.Messages | Compact -> profile := true; verbose := false
+  | Lsp.Types.TraceValue.Messages | Lsp.Types.TraceValue.Compact -> profile := true; verbose := false
   | Lsp.Types.TraceValue.Verbose -> profile := true; verbose := true
 
 let timed what f =
