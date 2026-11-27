@@ -1,3 +1,8 @@
+# Unreleased
+
+- Fix: `findall_solutions` starts from the caller’s current runtime state,
+  so embedded predicates can read declarations made earlier in the query.
+
 # v4.0.1 (October 2026)
 
 
