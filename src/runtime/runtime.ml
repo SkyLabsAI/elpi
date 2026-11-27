@@ -4376,7 +4376,7 @@ let make_runtime : ?max_steps: int -> ?delay_outside_fragment: bool -> executabl
       initial_goal = g;
       assignments = StrMap.empty;
       initial_depth = depth;
-      initial_runtime_state = !CS.initial_state;
+      initial_runtime_state = !CS.state;
       symbol_table = !C.table;
       builtins = !FFI.builtins;
     } in
